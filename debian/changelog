@@ -1,3 +1,9 @@
+zlib (1:1.2.7.dfsg-13maemo1+0cssu1+thumb0) unstable; urgency=low
+
+  * Thumb2 compiled
+
+ -- Ivaylo Dimitrov <freemangordon@abv.bg>  Tue, 02 Jan 2013 21:17:32 +0200
+
 zlib (1:1.2.7.dfsg-13maemo1+0cssu1) unstable; urgency=low
 
   * Adopt package for Maemo

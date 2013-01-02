@@ -8,7 +8,7 @@ Build-Depends: debhelper (>= 5)
 
 Package: zlib1g
 Architecture: any
-Depends: ${shlibs:Depends}, ${misc:Depends}
+Depends: ${shlibs:Depends}, ${misc:Depends}, kernel-feature-errata-430973-workaround[armel]
 Pre-Depends: ${misc:Pre-Depends}
 Priority: required
 Breaks: libxml2 (< 2.6.32.dfsg-5maemo4+0m5+0cssu1)
@@ -40,7 +40,7 @@ Description: compression library - development
 Package: zlib-bin
 Section: utils
 Architecture: any
-Depends: ${shlibs:Depends}, ${misc:Depends}
+Depends: ${shlibs:Depends}, ${misc:Depends}, kernel-feature-errata-430973-workaround[armel]
 Description: compression library - sample programs
  Some generally useful sample programs from the contrib directory.
  Includes a "mini" implementation of `zip' and `unzip' called
