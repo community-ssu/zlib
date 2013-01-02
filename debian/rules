@@ -44,7 +44,7 @@ ifeq ($(DEB_BUILD_ARCH), armel)
 
 # Use thumb mode if it enabled.
 ifneq (,$(findstring thumb,$(DEB_BUILD_OPTIONS)))
-#	CFLAGS += -mthumb
+	CFLAGS += -mthumb
 endif
 endif
 
