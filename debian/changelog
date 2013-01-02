@@ -1,12 +1,12 @@
 zlib (1:1.2.7.dfsg-13maemo1+0cssu1) unstable; urgency=low
 
   * Adopt package for Maemo
-  * Required fixed libxml2
+  * Requires fixed libxml2
   * ARM NEON patches
     - adler32 - from meego zlib-1.2.7-adler32_vec_kaffeemonster.patch
-      (aprox. 5% speed up in deflating)
-    - inflateneon - from Code Aurora Forum shows 10% slowdown
-      not implemented
+      (aprox. 7% decompression speed up)
+    - slhash - from https://github.com/kaffeemonster/zlib/tree/slhash
+      (approx 18% compression speed up)
 
  -- Ludek Finstrle <luf@pzkagis.cz>  Fri, 29 Dec 2012 19:50:51 +0100
 
@@ -35,7 +35,7 @@ zlib (1:1.2.7.dfsg-11) unstable; urgency=low
 
 zlib (1:1.2.7.dfsg-10) unstable; urgency=low
 
-  * Nope, here we go again... 
+  * Nope, here we go again...
 
  -- Mark Brown <broonie@debian.org>  Tue, 22 May 2012 11:22:36 +0100
 
@@ -68,7 +68,7 @@ zlib (1:1.2.7.dfsg-6) unstable; urgency=low
 zlib (1:1.2.7.dfsg-5) unstable; urgency=low
 
   * s390x doesn't actually have 32 bit, only 31 bit, and making the
-    compiler options consistent is too hard. 
+    compiler options consistent is too hard.
 
  -- Mark Brown <broonie@debian.org>  Sun, 20 May 2012 22:55:16 +0100
 
@@ -152,7 +152,7 @@ zlib (1:1.2.3.4.dfsg-1) unstable; urgency=low
   * This release also fixes handling of EOF in gzio (closes: #301283).
   * Fix symbol version for inflateUndermine.
   * Move -dbg to debug section.
-  * Add upstream home page. 
+  * Add upstream home page.
   * Policy 3.8.3.
 
  -- Mark Brown <broonie@debian.org>  Thu, 24 Dec 2009 17:35:16 +0000
@@ -223,7 +223,7 @@ zlib (1:1.2.3.3.dfsg-8) unstable; urgency=low
 
 zlib (1:1.2.3.3.dfsg-7) unstable; urgency=low
 
-  * Hard code uname to GNU so configure script can cope with non-Linux 
+  * Hard code uname to GNU so configure script can cope with non-Linux
     ports (closes: #448651).
 
  -- Mark Brown <broonie@debian.org>  Tue, 30 Oct 2007 22:01:55 +0000
@@ -335,13 +335,13 @@ zlib (1:1.2.3-9.osso9) unstable; urgency=low
 
 zlib (1:1.2.3-9.osso8) unstable; urgency=low
 
-  * Removed wrong patches. 
+  * Removed wrong patches.
 
  -- Yauheni Kaliuta <yauheni.kaliuta@nokia.com>  Tue, 04 Sep 2007 12:09:44 +0300
 
 zlib (1:1.2.3-9.osso7) unstable; urgency=low
 
-  * Legal cleanup: contrib/delphi removed. Fixes: NB#66724 
+  * Legal cleanup: contrib/delphi removed. Fixes: NB#66724
 
  -- Yauheni Kaliuta <yauheni.kaliuta@nokia.com>  Tue, 28 Aug 2007 15:08:39 +0300
 
@@ -776,7 +776,7 @@ zlib (1:1.1.3-19) unstable; urgency=low
 
 zlib (1:1.1.3-18) unstable; urgency=low
 
-  * Fix -d option support so that archives can be extracted without 
+  * Fix -d option support so that archives can be extracted without
     using -d (closes: #119898).
   * s/pkzip/PKZIP/ in control file.
 
@@ -905,7 +905,7 @@ zlib1 (1:1.1.3-3) unstable; urgency=low
  -- Joel Klecker <espy@debian.org>  Thu, 11 Mar 1999 13:16:58 -0800
 
 zlib1 (1:1.1.3-2) unstable; urgency=low
-  
+
   * Fix incorrect dependency in shlibs files (Bug:#28083).
 
  -- Joel Klecker <espy@debian.org>  Fri, 16 Oct 1998 23:58:41 -0700
@@ -928,10 +928,10 @@ zlib1 (1:1.1.3-1) unstable; urgency=low
  -- Joel Klecker <espy@debian.org>  Tue, 13 Oct 1998 19:30:29 -0700
 
 zlib (1:1.1.2-0.1) unstable; urgency=low
-  
+
   * New upstream bugfix release.
   * libc5 compat packages are now built on only i386 and m68k.
-  
+
  -- Joel Klecker <jk@espy.org>  Mon, 11 May 1998 18:33:46 -0700
 
 zlib (1:1.1.1-0.1) unstable; urgency=low
