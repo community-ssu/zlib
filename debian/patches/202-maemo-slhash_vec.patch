@@ -1,0 +1,1990 @@
+Index: zlib-1.2.7.dfsg/slhash.c
+===================================================================
+--- /dev/null	1970-01-01 00:00:00.000000000 +0000
++++ zlib-1.2.7.dfsg/slhash.c	2013-01-03 00:57:19.000000000 +0200
+@@ -0,0 +1,56 @@
++/* slhash.c -- slide the hash table during fill_window()
++ * Copyright (C) 1995-2010 Jean-loup Gailly and Mark Adler
++ * For conditions of distribution and use, see copyright notice in zlib.h
++ */
++#include "deflate.h"
++#define NIL 0
++
++#ifndef NO_SLHASH_VEC
++#  if defined(__arm__)
++#    include "arm/slhash.c"
++#  elif defined(__alpha__)
++#    include "alpha/slhash.c"
++#  elif defined(__bfin__)
++#    include "bfin/slhash.c"
++#  elif defined(__ia64__)
++#    include "ia64/slhash.c"
++#  elif defined(__mips__)
++#    include "mips/slhash.c"
++#  elif defined(__hppa__) || defined(__hppa64__)
++#    include "parisc/slhash.c"
++#  elif defined(__powerpc__) || defined(__powerpc64__)
++#    include "ppc/slhash.c"
++#  elif defined(__tile__)
++#    include "tile/slhash.c"
++#  elif defined(__i386__) || defined(__x86_64__)
++#    include "x86/slhash.c"
++#  endif
++#endif
++
++#ifndef HAVE_SLHASH_COMPLETE
++#  ifndef HAVE_SLHASH_VEC
++local void update_hoffset(Posf *p, uInt wsize, unsigned n)
++{
++    register unsigned m;
++    do {
++        m = *p;
++        *p++ = (Pos)(m >= wsize ? m-wsize : NIL);
++    } while (--n);
++}
++#  endif
++
++void ZLIB_INTERNAL _sh_slide (p, q, wsize, n)
++    Posf *p;
++    Posf *q;
++    uInt wsize;
++    unsigned n;
++{
++    update_hoffset(p, wsize, n);
++#  ifndef FASTEST
++    /* If n is not on any hash chain, prev[n] is garbage but
++     * its value will never be used.
++     */
++    update_hoffset(q, wsize, wsize);
++#  endif
++}
++#endif
+Index: zlib-1.2.7.dfsg/arm/slhash.c
+===================================================================
+--- /dev/null	1970-01-01 00:00:00.000000000 +0000
++++ zlib-1.2.7.dfsg/arm/slhash.c	2013-01-03 00:57:19.000000000 +0200
+@@ -0,0 +1,261 @@
++/* slhash.c -- slide the hash table during fill_window()
++ * Copyright (C) 1995-2010 Jean-loup Gailly and Mark Adler
++ * Copyright (C) 2011 Jan Seiffert
++ * For conditions of distribution and use, see copyright notice in zlib.h
++ */
++
++/* NOTE:
++ * We do not precheck the length or wsize for small values because
++ * we assume a minimum len of 256 (for MEM_LEVEL 1) and a minimum wsize
++ * of 256 for windowBits 8
++ */
++
++#if defined(__ARM_NEON__) && defined(__ARMEL__)
++/*
++ * Big endian NEON qwords are kind of broken.
++ * They are big endian within the dwords, but WRONG
++ * (really??) way round between lo and hi.
++ * Creating some kind of PDP11 middle endian.
++ *
++ * This is madness and unsupportable. For this reason
++ * GCC wants to disable qword endian specific patterns.
++ */
++#  include <arm_neon.h>
++
++#  define SOVUSQ sizeof(uint16x8_t)
++#  define SOVUS sizeof(uint16x4_t)
++#  define HAVE_SLHASH_VEC
++
++local void update_hoffset_l(Posf *p, uInt wsize, unsigned n)
++{
++    unsigned int i;
++    uint32x4_t vwsize;
++
++    vwsize = vdupq_n_u32(wsize);
++
++    if (ALIGN_DOWN_DIFF(p, SOVUSQ)) {
++        uint32x4_t in = vmovl_u16(*(uint16x4_t *)p);
++        in  = vqsubq_u32(in, vwsize);
++        *(uint16x4_t *)p = vmovn_u32(in);
++        p += SOVUS/sizeof(*p);
++        n -= SOVUS/sizeof(*p);
++    }
++    i  = n / (SOVUSQ/sizeof(*p));
++    n %= SOVUSQ/sizeof(*p);
++
++    do {
++        uint16x8_t in8 = *(uint16x8_t *)p;
++        uint32x4_t inl = vmovl_u16(vget_low_u16(in8));
++        uint32x4_t inh = vmovl_u16(vget_high_u16(in8));
++        inl = vqsubq_u32(inl, vwsize);
++        inh = vqsubq_u32(inh, vwsize);
++        in8 = vcombine_u16(vmovn_u32(inl), vmovn_u32(inh));
++        *(uint16x8_t *)p = in8;
++        p += SOVUSQ/sizeof(*p);
++    } while (--i);
++
++    if (n >= SOVUS/sizeof(*p)) {
++        uint32x4_t in = vmovl_u16(*(uint16x4_t *)p);
++        in  = vqsubq_u32(in, vwsize);
++        *(uint16x4_t *)p = vmovn_u32(in);
++        p += SOVUS/sizeof(*p);
++        n -= SOVUS/sizeof(*p);
++    }
++    if (unlikely(n)) do {
++        register unsigned m = *p;
++        *p++ = (Pos)(m >= wsize ? m-wsize : NIL);
++    } while (--n);
++}
++
++local void update_hoffset(Posf *p, uInt wsize, unsigned n)
++{
++    unsigned int i;
++    uint16x8_t vwsize;
++
++    i  = ALIGN_DIFF(p, SOVUS)/sizeof(Pos);
++    n -= i;
++    if (unlikely(i)) do {
++        register unsigned m = *p;
++        *p++ = (Pos)(m >= wsize ? m-wsize : NIL);
++    } while (--i);
++
++    if(unlikely(wsize > (1<<16)-1)) {
++        update_hoffset_l(p, wsize, n);
++        return;
++    }
++    vwsize = vdupq_n_u16(wsize);
++
++    if (ALIGN_DOWN_DIFF(p, SOVUSQ)) {
++        uint16x4_t in4 = *(uint16x4_t *)p;
++        in4 = vqsub_u16(in4, vget_low_u16(vwsize));
++        *(uint16x4_t *)p = in4;
++        p += SOVUS/sizeof(*p);
++        n -= SOVUS/sizeof(*p);
++    }
++    i  = n / (SOVUSQ/sizeof(*p));
++    n %= SOVUSQ/sizeof(*p);
++    do {
++        *(uint16x8_t *)p = vqsubq_u16(*(uint16x8_t *)p, vwsize);
++        p += SOVUSQ/sizeof(*p);
++    } while (--i);
++
++    if (n >= SOVUS/sizeof(*p)) {
++        uint16x4_t in4 = *(uint16x4_t *)p;
++        in4 = vqsub_u16(in4, vget_low_u16(vwsize));
++        *(uint16x4_t *)p = in4;
++        p += SOVUS/sizeof(*p);
++        n -= SOVUS/sizeof(*p);
++    }
++    if (unlikely(n)) do {
++        register unsigned m = *p;
++        *p++ = (Pos)(m >= wsize ? m-wsize : NIL);
++    } while (--n);
++}
++#elif defined(__IWMMXT__)
++#  define HAVE_SLHASH_VEC
++#  ifndef __GNUC__
++/* GCC doesn't take it's own intrinsic header and ICEs if forced to */
++#    include <mmintrin.h>
++#  else
++typedef unsigned long long __m64;
++
++local inline __m64 _mm_subs_pu16(__m64 a, __m64 b)
++{
++    __m64 ret;
++    asm ("wsubhus %0, %1, %2" : "=y" (ret) : "y" (a), "y" (b));
++    return ret;
++}
++#  endif
++#  define SOV4 (sizeof(__m64))
++
++/* ========================================================================= */
++local inline void update_hoffset(Posf *p, uInt wsize, unsigned n)
++{
++    if (likely(wsize < (1<<16))) {
++        unsigned int i, f, wst;
++        __m64 vwsize;
++
++        wst = (wsize  << 16) | (wsize  & 0x0000ffff);
++        vwsize = (__m64)(((unsigned long long)wst  << 32) | wst);
++        /* align */
++        f = (unsigned)ALIGN_DIFF(p, SOV4);
++        if (unlikely(f)) {
++            f /= sizeof(*p);
++            n -= f;
++            do {
++                register unsigned m = *p;
++                *p++ = (Pos)(m >= wsize ? m-wsize : NIL);
++            } while (--f);
++        }
++
++        /* do it */
++        i  = n / (SOV4/sizeof(*p));
++        n %= SOV4/sizeof(*p);
++        if (i & 1) {
++            __m64 x = _mm_subs_pu16(*(__m64 *)p, vwsize);
++            *(__m64 *)p = x;
++            p += SOV4/sizeof(*p);
++            i--;
++        }
++        i /= 2;
++        do {
++            __m64 x1, x2;
++            x1 = ((__m64 *)p)[0];
++            x2 = ((__m64 *)p)[1];
++            x1 = _mm_subs_pu16(x1, vwsize);
++            x2 = _mm_subs_pu16(x2, vwsize);
++            ((__m64 *)p)[0] = x1;
++            ((__m64 *)p)[1] = x2;
++            p += 2*(SOV4/sizeof(*p));
++        } while (--i);
++
++        /* handle trailer */
++        if (unlikely(n)) {
++            do {
++                register unsigned m = *p;
++                *p++ = (Pos)(m >= wsize ? m-wsize : NIL);
++            } while (--n);
++        }
++    } else {
++        do {
++            register unsigned m = *p;
++            *p++ = (Pos)(m >= wsize ? m-wsize : NIL);
++        } while (--n);
++    }
++}
++#elif defined(__GNUC__) && ( \
++        defined(__thumb2__)  && ( \
++            !defined(__ARM_ARCH_7__) && !defined(__ARM_ARCH_7M__) \
++        ) || ( \
++        !defined(__thumb__) && ( \
++            defined(__ARM_ARCH_6__)   || defined(__ARM_ARCH_6J__)  || \
++            defined(__ARM_ARCH_6T2__) || defined(__ARM_ARCH_6ZK__) || \
++            defined(__ARM_ARCH_7A__)  || defined(__ARM_ARCH_7R__) \
++        )) \
++    )
++#  define SOU32 (sizeof(unsigned int))
++#  define HAVE_SLHASH_VEC
++
++local noinline void update_hoffset_l(Posf *p, uInt wsize, unsigned n)
++{
++    do {
++        register unsigned m = *p;
++        *p++ = (Pos)(m >= wsize ? m-wsize : NIL);
++    } while (--n);
++}
++
++local void update_hoffset(Posf *p, uInt wsize, unsigned n)
++{
++    unsigned int i, vwsize;
++
++    if(unlikely(wsize > (1<<16)-1)) {
++        update_hoffset_l(p, wsize, n);
++        return;
++    }
++
++    vwsize = wsize | (wsize << 16);
++    if (ALIGN_DOWN_DIFF(p, SOU32)) {
++        register unsigned m = *p;
++        *p++ = (Pos)(m >= wsize ? m-wsize : NIL);
++        n--;
++    }
++
++    i  = n / (SOU32/sizeof(*p));
++    n %= SOU32/sizeof(*p);
++    if (i >= 4) {
++        unsigned int j = i / 4;
++        i %= 4;
++        asm (
++            "1:\n\t"
++            "subs %1, #1\n\t"
++            "ldmia %0, {r4-r7}\n\t"
++            "uqsub16 r4, r4, %2\n\t"
++            "uqsub16 r5, r5, %2\n\t"
++            "uqsub16 r6, r6, %2\n\t"
++            "uqsub16 r7, r7, %2\n\t"
++            "stmia %0!, {r4-r7}\n\t"
++            "bne 1b"
++            : /* 0 */ "=r" (p),
++              /* 1 */ "=r" (j)
++            : /* 2 */ "r" (vwsize),
++              /*  */ "0" (p),
++              /*  */ "1" (j)
++            : "r4", "r5", "r6", "r7"
++        );
++            unsigned int in = *(unsigned int *)p;
++            *(unsigned int *)p = in;
++    }
++    if (i) do {
++        unsigned int in = *(unsigned int *)p;
++        asm ("uqsub16 %0, %1, %2" : "=r" (in) : "r" (in), "r" (vwsize));
++        *(unsigned int *)p = in;
++        p += SOU32/sizeof(*p);
++    } while (--i);
++
++    if (unlikely(n)) {
++        register unsigned m = *p;
++        *p++ = (Pos)(m >= wsize ? m-wsize : NIL);
++    }
++}
++
++#endif
+Index: zlib-1.2.7.dfsg/Makefile.in
+===================================================================
+--- zlib-1.2.7.dfsg.orig/Makefile.in	2013-01-03 00:57:19.000000000 +0200
++++ zlib-1.2.7.dfsg/Makefile.in	2013-01-03 01:01:37.000000000 +0200
+@@ -54,11 +54,11 @@
+ man3dir = ${mandir}/man3
+ pkgconfigdir = ${libdir}/pkgconfig
+ 
+-OBJZ = adler32.o crc32.o deflate.o infback.o inffast.o inflate.o inftrees.o trees.o zutil.o
++OBJZ = adler32.o slhash.o crc32.o deflate.o infback.o inffast.o inflate.o inftrees.o trees.o zutil.o
+ OBJG = compress.o uncompr.o gzclose.o gzlib.o gzread.o gzwrite.o
+ OBJC = $(OBJZ) $(OBJG)
+ 
+-PIC_OBJZ = adler32.lo crc32.lo deflate.lo infback.lo inffast.lo inflate.lo inftrees.lo trees.lo zutil.lo
++PIC_OBJZ = adler32.lo slhash.lo crc32.lo deflate.lo infback.lo inffast.lo inflate.lo inftrees.lo trees.lo zutil.lo
+ PIC_OBJG = compress.lo uncompr.lo gzclose.lo gzlib.lo gzread.lo gzwrite.lo
+ PIC_OBJC = $(PIC_OBJZ) $(PIC_OBJG)
+ 
+@@ -273,6 +273,7 @@
+ compress.o example.o minigzip.o uncompr.o: zlib.h zconf.h
+ crc32.o: zutil.h zlib.h zconf.h crc32.h
+ deflate.o: deflate.h zutil.h zlib.h zconf.h
++slhash.o: deflate.h zutil.h zlib.h zconf.h
+ infback.o inflate.o: zutil.h zlib.h zconf.h inftrees.h inflate.h inffast.h inffixed.h
+ inffast.o: zutil.h zlib.h zconf.h inftrees.h inflate.h inffast.h
+ inftrees.o: zutil.h zlib.h zconf.h inftrees.h
+@@ -284,6 +285,7 @@
+ compress.lo example.lo minigzip.lo uncompr.lo: zlib.h zconf.h
+ crc32.lo: zutil.h zlib.h zconf.h crc32.h
+ deflate.lo: deflate.h zutil.h zlib.h zconf.h
++slhash.lo: deflate.h zutil.h zlib.h zconf.h
+ infback.lo inflate.lo: zutil.h zlib.h zconf.h inftrees.h inflate.h inffast.h inffixed.h
+ inffast.lo: zutil.h zlib.h zconf.h inftrees.h inflate.h inffast.h
+ inftrees.lo: zutil.h zlib.h zconf.h inftrees.h
+Index: zlib-1.2.7.dfsg/deflate.c
+===================================================================
+--- zlib-1.2.7.dfsg.orig/deflate.c	2013-01-03 00:57:17.000000000 +0200
++++ zlib-1.2.7.dfsg/deflate.c	2013-01-03 00:57:19.000000000 +0200
+@@ -1388,8 +1388,7 @@
+ local void fill_window(s)
+     deflate_state *s;
+ {
+-    register unsigned n, m;
+-    register Posf *p;
++    register unsigned n;
+     unsigned more;    /* Amount of free space at the end of the window. */
+     uInt wsize = s->w_size;
+ 
+@@ -1427,24 +1426,7 @@
+                later. (Using level 0 permanently is not an optimal usage of
+                zlib, so we don't care about this pathological case.)
+              */
+-            n = s->hash_size;
+-            p = &s->head[n];
+-            do {
+-                m = *--p;
+-                *p = (Pos)(m >= wsize ? m-wsize : NIL);
+-            } while (--n);
+-
+-            n = wsize;
+-#ifndef FASTEST
+-            p = &s->prev[n];
+-            do {
+-                m = *--p;
+-                *p = (Pos)(m >= wsize ? m-wsize : NIL);
+-                /* If n is not on any hash chain, prev[n] is garbage but
+-                 * its value will never be used.
+-                 */
+-            } while (--n);
+-#endif
++            _sh_slide(s->head, s->prev, wsize, s->hash_size);
+             more += wsize;
+         }
+         if (s->strm->avail_in == 0) break;
+Index: zlib-1.2.7.dfsg/deflate.h
+===================================================================
+--- zlib-1.2.7.dfsg.orig/deflate.h	2013-01-03 00:57:17.000000000 +0200
++++ zlib-1.2.7.dfsg/deflate.h	2013-01-03 00:57:19.000000000 +0200
+@@ -301,6 +301,8 @@
+ void ZLIB_INTERNAL _tr_align OF((deflate_state *s));
+ void ZLIB_INTERNAL _tr_stored_block OF((deflate_state *s, charf *buf,
+                         ulg stored_len, int last));
++/* in slhash.c */
++void ZLIB_INTERNAL _sh_slide OF((Posf *p, Posf *q, uInt wsize, unsigned n));
+ 
+ #define d_code(dist) \
+    ((dist) < 256 ? _dist_code[dist] : _dist_code[256+((dist)>>7)])
+Index: zlib-1.2.7.dfsg/alpha/slhash.c
+===================================================================
+--- /dev/null	1970-01-01 00:00:00.000000000 +0000
++++ zlib-1.2.7.dfsg/alpha/slhash.c	2013-01-03 00:57:19.000000000 +0200
+@@ -0,0 +1,122 @@
++/* slhash.c -- slide the hash table during fill_window()
++ * Copyright (C) 1995-2010 Jean-loup Gailly and Mark Adler
++ * Copyright (C) 2011 Jan Seiffert
++ * For conditions of distribution and use, see copyright notice in zlib.h
++ */
++
++/* NOTE:
++ * We do not precheck the length or wsize for small values because
++ * we assume a minimum len of 256 (for MEM_LEVEL 1) and a minimum wsize
++ * of 256 for windowBits 8
++ */
++
++/* we use inline asm, so GCC it is */
++#ifdef __GNUC__
++#  define HAVE_SLHASH_VEC
++#  define SOUL (sizeof(unsigned long))
++
++#  if GCC_VERSION_GE(303)
++#    define cmpbge  __builtin_alpha_cmpbge
++#    define zapnot  __builtin_alpha_zapnot
++#  else
++/* ========================================================================= */
++local inline unsigned long cmpbge(unsigned long a, unsigned long b)
++{
++    unsigned long r;
++    asm ("cmpbge	%r1, %2, %0" : "=r" (r) : "rJ" (a), "rI" (b));
++    return r;
++}
++
++/* ========================================================================= */
++local inline unsigned long zapnot(unsigned long a, unsigned long mask)
++{
++    unsigned long r;
++    asm ("zapnot	%r1, %2, %0" : "=r" (r) : "rJ" (a), "rI" (mask));
++    return r;
++}
++#  endif
++
++/* ========================================================================= */
++/*
++ * We do not have saturation, but funky multi compare/mask
++ * instructions, since the first alpha, for character handling.
++ */
++local inline unsigned long psubus(unsigned long a, unsigned long b)
++{
++    unsigned long m = cmpbge(a, b);
++    m  = ((m & 0xaa) >> 1) & m;
++    m |= m << 1;
++    a  = zapnot(a, m);
++    return a - zapnot(b, m);
++}
++
++/* ========================================================================= */
++local inline void update_hoffset(Posf *p, uInt wsize, unsigned n)
++{
++    if (likely(wsize < (1<<16))) {
++        unsigned long vwsize;
++        unsigned int i, f;
++
++        vwsize = (wsize  << 16) | (wsize  & 0x0000ffff);
++        vwsize = (vwsize << 32) | (vwsize & 0xffffffff);
++        /* align */
++        f = (unsigned)ALIGN_DIFF(p, SOUL);
++        if (unlikely(f)) {
++            f /= sizeof(*p);
++            n -= f;
++            if (unlikely(f & 1)) {
++                register unsigned m = *p;
++                *p++ = (Pos)(m >= wsize ? m-wsize : NIL);
++                f--;
++            }
++            if (f >= 2) {
++                unsigned long x = psubus(*(unsigned int *)p, vwsize);
++                *(unsigned int *)p = (unsigned int)x;
++                p += 2;
++                f -= 2;
++            }
++        }
++
++        /* do it */
++        i  = n / (SOUL/sizeof(*p));
++        n %= SOUL/sizeof(*p);
++        if (unlikely(i & 1)) {
++            unsigned long x = psubus(*(unsigned long *)p, vwsize);
++            *(unsigned long *)p = x;
++            p += SOUL/sizeof(*p);
++            i--;
++        }
++        i /= 2;
++        do {
++            unsigned long x1, x2;
++            x1 = ((unsigned long *)p)[0];
++            x2 = ((unsigned long *)p)[1];
++            x1 = psubus(x1, vwsize);
++            x2 = psubus(x2, vwsize);
++            ((unsigned long *)p)[0] = x1;
++            ((unsigned long *)p)[1] = x2;
++            p += 2*(SOUL/sizeof(*p));
++        } while (--i);
++
++        /* handle trailer */
++        if (unlikely(n)) {
++            if (n >= 2) {
++                unsigned long x = psubus(*(unsigned int *)p, vwsize);
++                *(unsigned int *)p = (unsigned int)x;
++                p += 2;
++                n -= 2;
++            }
++            if (unlikely(n)) {
++                register unsigned m = *p;
++                *p++ = (Pos)(m >= wsize ? m-wsize : NIL);
++            }
++        }
++
++    } else {
++        do {
++            register unsigned m = *p;
++            *p++ = (Pos)(m >= wsize ? m-wsize : NIL);
++        } while (--n);
++    }
++}
++#endif
+Index: zlib-1.2.7.dfsg/bfin/slhash.c
+===================================================================
+--- /dev/null	1970-01-01 00:00:00.000000000 +0000
++++ zlib-1.2.7.dfsg/bfin/slhash.c	2013-01-03 00:57:19.000000000 +0200
+@@ -0,0 +1,171 @@
++/* slhash.c -- slide the hash table during fill_window()
++ * Copyright (C) 1995-2010 Jean-loup Gailly and Mark Adler
++ * Copyright (C) 2011 Jan Seiffert
++ * For conditions of distribution and use, see copyright notice in zlib.h
++ */
++
++/* NOTE:
++ * We do not precheck the length or wsize for small values because
++ * we assume a minimum len of 256 (for MEM_LEVEL 1) and a minimum wsize
++ * of 256 for windowBits 8
++ */
++
++/* we use inline asm, so GCC it is */
++#ifdef __GNUC__
++#  define HAVE_SLHASH_VEC
++#  define SO32 (sizeof(unsigned int))
++
++/* ========================================================================= */
++local inline void update_hoffset(Posf *p, uInt wsize, unsigned n)
++{
++    /*
++     * Cycles mesured with the cycle counter, both hashes, 32k:
++     * orig:   1983162
++     * new:     721636
++     * So this code is 2.7 times faster. If only the memory
++     * subsystem would be faster, then there would be more
++     * speedup possible.
++     * But i don't see it...
++     */
++    if (likely(wsize <= (1<<15))) {
++        unsigned int vwsize, i, t, u, v;
++        Posf *p1;
++
++        /*
++         * We have saturation, but not unsigned...
++         * So we do dirty tricks.
++         * We subtract 32k from the unsigned value, then add the
++         * negated wsize with singed saturation, then we add 32k
++         * again, unsigend.
++         */
++        wsize = (unsigned short)((~wsize)+1);
++        vwsize = wsize | (wsize << 16);
++
++        asm (
++            "CC = BITTST(%0, 1);\n\t"
++#  ifdef __ELF__
++            "IF CC JUMP 3f;\n\t"
++            ".subsection 2\n"
++            "3:\t"
++#  else
++            "IF !CC JUMP 4f (BP);\n\t"
++#  endif
++            "%0 = W[%[i]] (Z);\n\t"
++            "%h0 = %h0 - %h[off];\n\t"
++            "%h0 = %h0 + %h[vwsize] (S);\n\t"
++            "%h0 = %h0 + %h[off];\n\t"
++            "W[%[i]++] = %0;\n\t"
++            "%[n] += -1;\n\t"
++#  ifdef __ELF__
++            "JUMP 4f\n\t"
++            ".previous\n"
++#  endif
++            "4:\n\t"
++            "%0 = %[n];\n\t"
++            "%[p1] = %[i];\n\t"
++            "CC = %[n] == 0;\n\t"
++            "%0 >>= 1;\n\t"
++            "%[i] += 4;\n\t"
++            "%0 += -2;\n\t"
++            "%[p0] = %[i];\n\t"
++            "%0 = ROT %0 by -1;\n\t"
++            "%1 = [%[p1]];\n\t"
++            "%[i] = %0;\n\t"
++            "%0 = [%[p0]];\n\t"
++            "%1 = %1 -|- %[off];\n\t"
++            "%1 = %1 +|+ %[vwsize] (S);\n\t"
++            "%1 = %1 +|+ %[off];\n\t"
++            "LSETUP (1f, 2f) LC1 = %[i];\n"
++            /*=========================*/
++            "1:\t"
++            "%0 = %0 -|- %[off] || [%[p1]++%[m8]] = %1;\n\t"
++            "%0 = %0 +|+ %[vwsize] (S) || %1 = [%[p1]];\n\t"
++            "%0 = %0 +|+ %[off];\n\t"
++            "%1 = %1 -|- %[off] || [%[p0]++%[m8]] = %0;\n\t"
++            "%1 = %1 +|+ %[vwsize] (S) || %0 = [%[p0]];\n\t"
++            "2:\t"
++            "%1 = %1 +|+ %[off];\n\t"
++            /*=========================*/
++            "%0 = %0 -|- %[off] || [%[p1]] = %1;\n\t"
++            "%0 = %0 +|+ %[vwsize] (S);\n\t"
++            "%0 = %0 +|+ %[off];\n\t"
++            "[%[p0]++] = %0;\n\t"
++#  ifdef __ELF__
++            "IF CC JUMP 5f;\n\t"
++            ".subsection 2\n"
++            "5:\t"
++#  else
++            "IF !CC JUMP 6f (BP);\n\t"
++#  endif
++            "%0 = [%[p0]];\n\t"
++            "%0 = %0 -|- %[off];\n\t"
++            "%0 = %0 +|+ %[vwsize] (S);\n\t"
++            "%0 = %0 +|+ %[off];\n"
++            "[%[p0]++] = %0;\n"
++#  ifdef __ELF__
++            "JUMP 6f\n\t"
++            ".previous\n"
++#  endif
++            "6:\n\t"
++            "%0 = %[n];\n\t"
++            "CC = BITTST(%0, 0);\n\t"
++#  ifdef __ELF__
++            "IF CC JUMP 7f;\n\t"
++            ".subsection 2\n"
++            "7:\t"
++#  else
++            "IF !CC JUMP 8f (BP);\n\t"
++#  endif
++            "%[n] = %[p0];\n\t"
++            "%0 = W[%[n]] (Z);\n\t"
++            "%h0 = %h0 - %h[off];\n\t"
++            "%h0 = %h0 + %h[vwsize] (S);\n\t"
++            "%h0 = %h0 + %h[off];\n\t"
++            "W[%[n]++] = %0;\n\t"
++            "%[p0] = %[n]\n\t"
++#  ifdef __ELF__
++            "JUMP 8f\n\t"
++            ".previous\n"
++#  endif
++            "8:"
++            : /*  0 */ "=&d" (t),
++              /*  1 */ "=&d" (u),
++              /*  2 */ [p0] "=b" (p),
++              /*  3 */ [p1] "=b" (p1),
++              /*  4 */ [n] "=a" (v),
++              /*  5 */ [i] "=a" (i),
++              /*  6 */ "=m" (*p)
++            : /*  7 */ [off] "d" (0x80008000),
++              /*  8 */ [vwsize] "d" (vwsize),
++              /*  9 */ [m8] "f" (2*SO32),
++              /*  */ "0" (p),
++              /*  */ "4" (n),
++              /*  */ "5" (p),
++              /*  */ "m" (*p)
++            : "cc"
++        );
++    } else {
++        register unsigned m;
++        /* GCC generates ugly code, so do it by hand */
++        asm (
++            "LSETUP (1f, 2f) LC1 = %5;\n"
++            "1:\t"
++            "%1 = W [%0] (Z);\n\t"
++            "%1 = %1 - %3;\n\t"
++            "CC = AC0_COPY;\n\t"
++            "IF !CC %1 = %4;\n"
++            "2:\t"
++            "W [%0++] = %1;\n\t"
++            : /* 0 */ "=a" (p),
++              /* 1 */ "=&d" (m),
++              /* 2 */ "=m" (*p)
++            : /* 3 */ "d" (wsize),
++              /* 3 */ "d" (0),
++              /* 5 */ "a" (n),
++              /*  */ "0" (p),
++              /*  */ "m" (*p)
++            : "cc"
++        );
++    }
++}
++#endif
+Index: zlib-1.2.7.dfsg/ia64/slhash.c
+===================================================================
+--- /dev/null	1970-01-01 00:00:00.000000000 +0000
++++ zlib-1.2.7.dfsg/ia64/slhash.c	2013-01-03 00:57:19.000000000 +0200
+@@ -0,0 +1,188 @@
++/* slhash.c -- slide the hash table during fill_window()
++ * Copyright (C) 1995-2010 Jean-loup Gailly and Mark Adler
++ * Copyright (C) 2011 Jan Seiffert
++ * For conditions of distribution and use, see copyright notice in zlib.h
++ */
++
++/* NOTE:
++ * We do not precheck the length or wsize for small values because
++ * we assume a minimum len of 256 (for MEM_LEVEL 1) and a minimum wsize
++ * of 256 for windowBits 8
++ */
++
++/* we use a bunch of inline asm, so GCC it is */
++#ifdef __GNUC__
++#  define HAVE_SLHASH_VEC
++#  define SOULL (sizeof(unsigned long long))
++
++#include <stdio.h>
++
++/* ========================================================================= */
++local inline void update_hoffset(Posf *p, uInt wsize, unsigned n)
++{
++    if (likely(wsize < (1<<16))) {
++        unsigned int i, j, f;
++        unsigned long long vwsize;
++        unsigned long long m1, m2;
++
++        vwsize = (wsize << 16) | (wsize  & 0x0000ffff);
++        vwsize = (vwsize << 32) | vwsize;
++
++        /* align */
++        f = (unsigned)ALIGN_DIFF(p, SOULL);
++        if (unlikely(f)) {
++            f /= sizeof(*p);
++            n -= f;
++            if (f & 1) {
++                register unsigned m = *p;
++                *p++ = (Pos)(m >= wsize ? m-wsize : NIL);
++                f--;
++            }
++            if (f >= 2) {
++                unsigned int m = *(unsigned int *)p;
++                asm ("psub2.uuu %0 = %1, %2" : "=r" (m) : "r" (m), "r" (vwsize));
++                *(unsigned int *)p = m;
++                p += 2;
++            }
++        }
++
++        /* do it */
++        i  = n / (SOULL/sizeof(*p));
++        n %= SOULL/sizeof(*p);
++        if (unlikely(i & 1)) {
++                m1 = *(unsigned long long *)p;
++                asm ("psub2.uuu %0 = %1, %2" : "=r" (m1) : "r" (m1), "r" (vwsize));
++                *(unsigned long long *)p = m1;
++                p += SOULL/sizeof(*p);
++                i--;
++        }
++        i /= 2;
++        if (likely(j = i / 4)) {
++            unsigned long long m3, m4, m5, m6, m7, m8;
++            Posf *p1, *p2, *p3, *p4, *p5, *p6, *p7;
++            i -= j * 4;
++            asm (
++                "mov.i ar.lc = %17\n"
++                "1:\n\t"
++                "ld8 %0 = [%8]\n\t"
++                "ld8 %1 = [%9]\n\t"
++                "nop.i 0x1\n\t"
++
++                "ld8 %2 = [%10]\n\t"
++                "ld8 %3 = [%11]\n\t"
++                "nop.i 0x2\n\t"
++
++                "ld8 %4 = [%12]\n\t"
++                "ld8 %5 = [%13]\n\t"
++                "nop.i 0x3\n\t"
++
++                "ld8 %6 = [%14]\n\t"
++                "ld8 %7 = [%15]\n\t"
++                "nop.i 0x4;;\n\t"
++
++                "psub2.uuu %0 = %0, %16\n\t"
++                "psub2.uuu %1 = %1, %16\n\t"
++                "psub2.uuu %2 = %2, %16\n\t"
++
++                "psub2.uuu %3 = %3, %16\n\t"
++                "psub2.uuu %4 = %4, %16\n\t"
++                "psub2.uuu %5 = %5, %16\n\t"
++
++                "psub2.uuu %6 = %6, %16\n\t"
++                "psub2.uuu %7 = %7, %16\n\t"
++                "nop.i 0x5\n\t;;"
++
++                "st8 [%8] = %0, 64\n\t"
++                "st8 [%9] = %1, 64\n\t"
++                "nop.i 0x6\n\t"
++
++                "st8 [%10] = %2, 64\n\t"
++                "st8 [%11] = %3, 64\n\t"
++                "nop.i 0x7\n\t"
++
++                "st8 [%12] = %4, 64\n\t"
++                "st8 [%13] = %5, 64\n\t"
++                "nop.i 0x8\n\t"
++
++                "st8 [%14] = %6, 64\n\t"
++                "st8 [%15] = %7, 64\n\t"
++                "br.cloop.sptk.few 1b;;"
++                : /*  0 */ "=&r" (m1),
++                  /*  1 */ "=&r" (m2),
++                  /*  2 */ "=&r" (m3),
++                  /*  3 */ "=&r" (m4),
++                  /*  4 */ "=&r" (m5),
++                  /*  5 */ "=&r" (m6),
++                  /*  6 */ "=&r" (m7),
++                  /*  7 */ "=&r" (m8),
++                  /*  8 */ "=r" (p),
++                  /*  9 */ "=r" (p1),
++                  /* 10 */ "=r" (p2),
++                  /* 11 */ "=r" (p3),
++                  /* 12 */ "=r" (p4),
++                  /* 13 */ "=r" (p5),
++                  /* 14 */ "=r" (p6),
++                  /* 15 */ "=r" (p7)
++                : /* 16 */ "r" (vwsize),
++                  /* 17 */ "r" (j-1),
++                  /*   */  "8" (p),
++                  /*   */  "9" (p+4),
++                  /*   */ "10" (p+8),
++                  /*   */ "11" (p+12),
++                  /*   */ "12" (p+16),
++                  /*   */ "13" (p+20),
++                  /*   */ "14" (p+24),
++                  /*   */ "15" (p+28)
++                : "ar.lc"
++            );
++        }
++        if (unlikely(i)) {
++            Posf *p1;
++            asm (
++                "mov.i ar.lc = %5\n"
++                "1:\n\t"
++                "ld8 %0 = [%2]\n\t"
++                "ld8 %1 = [%3]\n\t"
++                "nop.i 0x1;;\n\t"
++
++                "psub2.uuu %0 = %0, %4\n\t"
++                "psub2.uuu %1 = %1, %4\n\t"
++                "nop.i 0x2;;\n\t"
++
++                "st8 [%2] = %0, 16\n\t"
++                "st8 [%3] = %1, 16\n\t"
++                "br.cloop.sptk.few 1b;;"
++                : /* 0 */ "=&r" (m1),
++                  /* 1 */ "=&r" (m2),
++                  /* 2 */ "=r" (p),
++                  /* 3 */ "=r" (p1)
++                : /* 4 */ "r" (vwsize),
++                  /* 5 */ "r" (i-1),
++                  /*  */ "2" (p),
++                  /*  */ "3" (p+8)
++                : "ar.lc"
++            );
++        }
++
++        /* handle trailer */
++        if (unlikely(n)) {
++            if (n >= 2) {
++                unsigned int m = *(unsigned int *)p;
++                asm ("psub2.uuu %0 = %1, %2" : "=r" (m) : "r" (m), "r" (vwsize));
++                *(unsigned int *)p = m;
++                p += 2;
++                n -= 2;
++            }
++            if (n & 1) {
++                register unsigned m = *p;
++                *p++ = (Pos)(m >= wsize ? m-wsize : NIL);
++            }
++        }
++    } else {
++        do {
++            register unsigned m = *p;
++            *p++ = (Pos)(m >= wsize ? m-wsize : NIL);
++        } while (--n);
++    }
++}
++#endif
+Index: zlib-1.2.7.dfsg/mips/slhash.c
+===================================================================
+--- /dev/null	1970-01-01 00:00:00.000000000 +0000
++++ zlib-1.2.7.dfsg/mips/slhash.c	2013-01-03 00:57:19.000000000 +0200
+@@ -0,0 +1,130 @@
++/* slhash.c -- slide the hash table during fill_window()
++ * Copyright (C) 1995-2010 Jean-loup Gailly and Mark Adler
++ * Copyright (C) 2011 Jan Seiffert
++ * For conditions of distribution and use, see copyright notice in zlib.h
++ */
++
++/* NOTE:
++ * We do not precheck the length or wsize for small values because
++ * we assume a minimum len of 256 (for MEM_LEVEL 1) and a minimum wsize
++ * of 256 for windowBits 8
++ */
++
++/* we use a bunch of inline asm and GCC vector internals, so GCC it is */
++#ifdef __GNUC__
++#  ifdef __mips_loongson_vector_rev
++#    define HAVE_SLHASH_VEC
++#    include <loongson.h>
++#    define SOV4 (sizeof(uint16x4_t))
++
++/* ========================================================================= */
++local inline void update_hoffset(Posf *p, uInt wsize, unsigned n)
++{
++    if (likely(wsize < (1<<16))) {
++        unsigned int i, f, wst;
++        uint16x4_t vwsize;
++
++        wst = (wsize  << 16) | (wsize  & 0x0000ffff);
++        vwsize = (uint16x4_t)(((unsigned long long)wst  << 32) | wst);
++        /* align */
++        f = (unsigned)ALIGN_DIFF(p, SOV4);
++        if (unlikely(f)) {
++            f /= sizeof(*p);
++            n -= f;
++            do {
++                register unsigned m = *p;
++                *p++ = (Pos)(m >= wsize ? m-wsize : NIL);
++            } while (--f);
++        }
++
++        /* do it */
++        i  = n / (SOV4/sizeof(*p));
++        n %= SOV4/sizeof(*p);
++        if (i & 1) {
++            uint16x4_t x = psubush(*(uint16x4_t *)p, vwsize);
++            *(uint16x4_t *)p = x;
++            p += SOV4/sizeof(*p);
++            i--;
++        }
++        i /= 2;
++        do {
++            uint16x4_t x1, x2;
++            x1 = ((uint16x4_t *)p)[0];
++            x2 = ((uint16x4_t *)p)[1];
++            x1 = psubush(x1, vwsize);
++            x2 = psubush(x2, vwsize);
++            ((uint16x4_t *)p)[0] = x1;
++            ((uint16x4_t *)p)[1] = x2;
++            p += 2*(SOV4/sizeof(*p));
++        } while (--i);
++
++        /* handle trailer */
++        if (unlikely(n)) {
++            do {
++                register unsigned m = *p;
++                *p++ = (Pos)(m >= wsize ? m-wsize : NIL);
++            } while (--n);
++        }
++    } else {
++        do {
++            register unsigned m = *p;
++            *p++ = (Pos)(m >= wsize ? m-wsize : NIL);
++        } while (--n);
++    }
++}
++#  elif defined(__mips_dspr2)
++#    define HAVE_SLHASH_VEC
++typedef short v2u16 __attribute__((vector_size(4)));
++#    define SOV2 (sizeof(v2u16))
++
++/* ========================================================================= */
++local inline void update_hoffset(Posf *p, uInt wsize, unsigned n)
++{
++    if (likely(wsize < (1<<16))) {
++        unsigned int i, f;
++        v2u16 vwsize;
++
++        vwsize = (v2u16)((wsize  << 16) | (wsize  & 0x0000ffff));
++        /* align */
++        f = (unsigned)ALIGN_DIFF(p, SOV2);
++        if (unlikely(f)) {
++            register unsigned m = *p;
++            *p++ = (Pos)(m >= wsize ? m-wsize : NIL);
++            n--;
++        }
++
++        /* do it */
++        i  = n / (SOV2/sizeof(*p));
++        n %= SOV2/sizeof(*p);
++        if (unlikely(i & 1)) {
++            v2u16 x = __builtin_mips_subu_s_ph(*(v2u16 *)p, vwsize);
++            *(v2u16 *)p = x;
++            p += SOV2/sizeof(*p);
++            i--;
++        }
++        i /= 2;
++        do {
++            v2u16 x1, x2;
++            x1 = ((v2u16 *)p)[0];
++            x2 = ((v2u16 *)p)[1];
++            x1 = __builtin_mips_subu_s_ph(x1, vwsize);
++            x2 = __builtin_mips_subu_s_ph(x2, vwsize);
++            ((v2u16 *)p)[0] = x1;
++            ((v2u16 *)p)[1] = x2;
++            p += 2*(SOV2/sizeof(*p));
++        } while (--i);
++
++        /* handle trailer */
++        if (unlikely(n)) {
++            register unsigned m = *p;
++            *p++ = (Pos)(m >= wsize ? m-wsize : NIL);
++        }
++    } else {
++        do {
++            register unsigned m = *p;
++            *p++ = (Pos)(m >= wsize ? m-wsize : NIL);
++        } while (--n);
++    }
++}
++#  endif
++#endif
+Index: zlib-1.2.7.dfsg/parisc/slhash.c
+===================================================================
+--- /dev/null	1970-01-01 00:00:00.000000000 +0000
++++ zlib-1.2.7.dfsg/parisc/slhash.c	2013-01-03 00:57:19.000000000 +0200
+@@ -0,0 +1,114 @@
++/* slhash.c -- slide the hash table during fill_window()
++ * Copyright (C) 1995-2010 Jean-loup Gailly and Mark Adler
++ * Copyright (C) 2011 Jan Seiffert
++ * For conditions of distribution and use, see copyright notice in zlib.h
++ */
++
++/* NOTE:
++ * We do not precheck the length or wsize for small values because
++ * we assume a minimum len of 256 (for MEM_LEVEL 1) and a minimum wsize
++ * of 256 for windowBits 8
++ */
++
++/* we use a bunch of inline asm, so GCC it is */
++#ifdef __GNUC__
++/*
++ * the 7100LC && 7300LC are parisc 1.1, but have MAX-1, which already has the
++ * hadd, but there is no preprocessor define to detect them.
++ */
++#  if defined(_PA_RISC2_0) || defined(HAVE_PA7x00LC)
++#    define HAVE_SLHASH_VEC
++#    define SOST (sizeof(size_t))
++
++/* ========================================================================= */
++local inline void update_hoffset(Posf *p, uInt wsize, unsigned n)
++{
++    if (likely(wsize <= (1<<15))) {
++        unsigned int i, f;
++        size_t vwsize;
++        size_t m1, m2;
++
++        /*
++         * We have unsigned saturation, but one operand to the
++         * instruction is always signed m(
++         * So we add the negated wsize...
++         */
++        vwsize = (unsigned short)((~wsize)+1);
++        vwsize = (vwsize  << 16) | (vwsize  & 0x0000ffff);
++        /*
++         * sigh...
++         * PARISC 2.0 is _always_ 64 bit. So the register are 64Bit
++         * and the instructions work on 64Bit, ldd/std works, even
++         * in a 32Bit executable.
++         * The sad part: Unfortunatly 32Bit processes do not seem
++         * to get their upper register half saved on context switch.
++         * So restrict the 64Bit-at-once goodness to hppa64.
++         * Without this braindamage, this could bring a nice 16.5%
++         * speedup even to 32Bit processes.
++         * Now it's just 12.7% for 32 Bit processes.
++         */
++        if (SOST > 4) /* silence warning about shift larger then type size */
++            vwsize = ((vwsize << 16) << 16) | (vwsize  & 0xffffffff);
++
++        /* align */
++        f = (unsigned)ALIGN_DIFF(p, SOST);
++        if (unlikely(f)) {
++            f /= sizeof(*p);
++            n -= f;
++            if (f & 1) {
++                register unsigned m = *p;
++                *p++ = (Pos)(m >= wsize ? m-wsize : NIL);
++                f--;
++            }
++            if (SOST > 4 && f >= 2) {
++                unsigned int m = *(unsigned int *)p;
++                asm ("hadd,us %1, %2, %0" : "=r" (m) : "r" (m), "r" (vwsize));
++                *(unsigned int *)p = m;
++                p += 2;
++            }
++        }
++
++        /* do it */
++        i  = n / (SOST/sizeof(*p));
++        n %= SOST/sizeof(*p);
++        if (i & 1) {
++                m1 = *(size_t *)p;
++                asm ("hadd,us %1, %2, %0" : "=r" (m1) : "r" (m1), "r" (vwsize));
++                *(size_t *)p = m1;
++                p += SOST/sizeof(*p);
++                i--;
++        }
++        i /= 2;
++        do {
++                m1 = ((size_t *)p)[0];
++                m2 = ((size_t *)p)[1];
++                asm ("hadd,us %1, %2, %0" : "=r" (m1) : "r" (m1), "r" (vwsize));
++                asm ("hadd,us %1, %2, %0" : "=r" (m2) : "r" (m2), "r" (vwsize));
++                ((size_t *)p)[0] = m1;
++                ((size_t *)p)[1] = m2;
++                p += 2*(SOST/sizeof(*p));
++        } while (--i);
++
++        /* handle trailer */
++        if (unlikely(n)) {
++            if (SOST > 4 && n >= 2) {
++                unsigned int m = *(unsigned int *)p;
++                asm ("hadd,us %1, %2, %0" : "=r" (m) : "r" (m), "r" (vwsize));
++                *(unsigned int *)p = m;
++                p += 2;
++                n -= 2;
++            }
++            if (n & 1) {
++                register unsigned m = *p;
++                *p++ = (Pos)(m >= wsize ? m-wsize : NIL);
++            }
++        }
++    } else {
++        do {
++            register unsigned m = *p;
++            *p++ = (Pos)(m >= wsize ? m-wsize : NIL);
++        } while (--n);
++    }
++}
++#  endif
++#endif
+Index: zlib-1.2.7.dfsg/ppc/slhash.c
+===================================================================
+--- /dev/null	1970-01-01 00:00:00.000000000 +0000
++++ zlib-1.2.7.dfsg/ppc/slhash.c	2013-01-03 00:57:19.000000000 +0200
+@@ -0,0 +1,247 @@
++/* slhash.c -- slide the hash table during fill_window()
++ * Copyright (C) 1995-2010 Jean-loup Gailly and Mark Adler
++ * Copyright (C) 2011 Jan Seiffert
++ * For conditions of distribution and use, see copyright notice in zlib.h
++ */
++
++/* NOTE:
++ * We do not precheck the length or wsize for small values because
++ * we assume a minimum len of 256 (for MEM_LEVEL 1) and a minimum wsize
++ * of 256 for windowBits 8
++ */
++
++#if defined(__ALTIVEC__) && defined(__GNUC__)
++#  define HAVE_SLHASH_VEC
++#  include <altivec.h>
++#  define SOVUS (sizeof(vector unsigned short))
++
++local inline vector int vector_splat_scalar_s32(int x)
++{
++    vector int val = vec_lde(0, &x);
++    vector unsigned char vperm;
++
++    vperm = (vector unsigned char)vec_splat((vector int)vec_lvsl(0, &x), 0);
++    return vec_perm(val, val, vperm);
++}
++
++local inline vector unsigned short vector_splat_scalar_u16(unsigned short x)
++{
++    vector unsigned short val = vec_lde(0, &x);
++    vector unsigned char vperm;
++
++    vperm = (vector unsigned char)vec_splat((vector unsigned short)vec_lvsl(0, &x), 0);
++    return vec_perm(val, val, vperm);
++}
++
++local void update_hoffset_l(Posf *p, uInt wsize, unsigned n)
++{
++    vector unsigned short vin;
++    vector unsigned short v0;
++    vector int vwsize, vinl, vinh;
++    unsigned int f, i;
++
++    v0 = vec_splat_u16(0);
++    vwsize = vector_splat_scalar_s32((int)wsize);
++    /* achive alignment */
++    f = (unsigned) ALIGN_DOWN_DIFF(p, SOVUS);
++    if (f) {
++        vector unsigned char vperml, vpermr;
++        vector unsigned short vin_o;
++            f  = (SOVUS - f)/sizeof(*p);
++            n -= f;
++        vperml = vec_lvsl(0, p);
++        vpermr = vec_lvsr(0, p);
++        /* align hard down */
++             p = (unsigned short *)ALIGN_DOWN(p, SOVUS);
++           vin = vec_ldl(0, p);
++         vin_o = vec_perm(vin, vin, vperml);
++           vin = vec_perm(vin, v0, vperml);
++          vinl = (vector int)vec_mergel(v0, vin);
++          vinh = (vector int)vec_mergeh(v0, vin);
++          vinl = vec_sub(vinl, vwsize);
++          vinh = vec_sub(vinh, vwsize);
++           vin = vec_packsu(vinh, vinl);
++           vin = vec_perm(vin_o, vin, vpermr);
++        /*
++         * We write it out again element by element
++         * because writing out the whole vector
++         * may race against the owner of the other
++         * data.
++         * The proper fix for this is aligning the
++         * arrays at malloc time.
++         */
++        do {
++            vec_ste(vin, SOVUS-(f*sizeof(*p)), p);
++        } while (--f);
++        p += SOVUS/sizeof(*p);
++    }
++
++    i  = n / (SOVUS/sizeof(*p));
++    n %= SOVUS/sizeof(*p);
++
++    do {
++         vin = vec_ldl(0, p);
++        vinl = (vector int)vec_mergel(v0, vin);
++        vinh = (vector int)vec_mergeh(v0, vin);
++        vinl = vec_sub(vinl, vwsize);
++        vinh = vec_sub(vinh, vwsize);
++         vin = vec_packsu(vinh, vinl);
++        vec_stl(vin, 0, p);
++          p += SOVUS/sizeof(*p);
++    } while (--i);
++
++    if (n) {
++        vector unsigned char vperml, vpermr;
++        vector unsigned short vin_o;
++           vin = vec_ldl(0, p);
++        vperml = vec_lvsl(n*sizeof(*p), p);
++        vpermr = vec_lvsr(n*sizeof(*p), p);
++         vin_o = vec_perm(vin, vin, vperml);
++           vin = vec_perm(v0, vin, vperml);
++          vinl = (vector int)vec_mergel(v0, vin);
++          vinh = (vector int)vec_mergeh(v0, vin);
++          vinl = vec_sub(vinl, vwsize);
++          vinh = vec_sub(vinh, vwsize);
++           vin = vec_packsu(vinh, vinl);
++           vin = vec_perm(vin, vin_o, vpermr);
++             i = 0;
++        do {
++            vec_ste(vin, i*sizeof(*p), p);
++            i++;
++        } while (--n);
++    }
++}
++
++local void update_hoffset(Posf *p, uInt wsize, unsigned n)
++{
++    vector unsigned short vin;
++    vector unsigned short v0;
++    vector unsigned short vwsize;
++    unsigned int f, i;
++    unsigned int block_num;
++
++    block_num = DIV_ROUNDUP(n, 512); /* 32 block size * 16 */
++    f  = 512;
++    f |= block_num >= 256 ? 0 : block_num << 16;
++    vec_dst(p, f, 2);
++
++    if (unlikely(wsize > (1<<16)-1)) {
++        update_hoffset_l(p, wsize, n);
++        return;
++    }
++
++        v0 = vec_splat_u16(0);
++    vwsize = vector_splat_scalar_u16((unsigned short)wsize);
++    /* achive alignment */
++    f = (unsigned) ALIGN_DOWN_DIFF(p, SOVUS);
++    if (f) {
++        vector unsigned char vperml, vpermr;
++        vector unsigned short vin_o;
++            f  = (SOVUS-f)/sizeof(*p);
++            n -= f;
++        vperml = vec_lvsl(0, p);
++        vpermr = vec_lvsr(0, p);
++        /* align hard down */
++             p = (unsigned short *)ALIGN_DOWN(p, SOVUS);
++           vin = vec_ldl(0, p);
++         vin_o = vec_perm(vin, vin, vperml);
++           vin = vec_perm(vin, v0, vperml);
++           vin = vec_subs(vin, vwsize);
++           vin = vec_perm(vin_o, vin, vpermr);
++        do {
++            vec_ste(vin, SOVUS-(f*sizeof(*p)), p);
++        } while (--f);
++        p += SOVUS/sizeof(*p);
++    }
++
++    i  = n / (SOVUS/sizeof(*p));
++    n %= SOVUS/sizeof(*p);
++
++    do {
++        vin = vec_ldl(0, p);
++        vin = vec_subs(vin, vwsize);
++        vec_stl(vin, 0, p);
++         p += SOVUS/sizeof(*p);
++    } while (--i);
++
++    if (n) {
++        vector unsigned char vperml, vpermr;
++        vector unsigned short vin_o;
++           vin = vec_ldl(0, p);
++        vperml = vec_lvsl(n*sizeof(*p), p);
++        vpermr = vec_lvsr(n*sizeof(*p), p);
++         vin_o = vec_perm(vin, vin, vperml);
++           vin = vec_perm(v0, vin, vperml);
++           vin = vec_subs(vin, vwsize);
++           vin = vec_perm(vin, vin_o, vpermr);
++             i = 0;
++        do {
++            vec_ste(vin, i*sizeof(*p), p);
++            i++;
++        } while (--n);
++    }
++}
++#else
++#  define HAVE_SLHASH_VEC
++#  include <limits.h>
++/*
++ * PowerPC is a complicated beast...
++ *
++ * Most PPC pipelines do not cope well with
++ * conditional branches. The simple ones (embedded
++ * & synthesized) because they are simple, the big
++ * ones because they are ... big.
++ *
++ * And here comes the kicker: PPC does not have a
++ * conditional move. (Or: The isel instruction is
++ * "brand new" for the Power ISA v2.06, a.k.a the
++ * POWER7)
++ * So GCC generates a little branch over a "move
++ * zero". Which is data dependent. Which plays
++ * havok with the branch prediction if the CPU has
++ * one, or simply with the instruciton flow in the
++ * pipeline if not.
++ *
++ * So rewrite this a little to get some kind of
++ * conditional move.
++ * This gives an ~5.6% overall speedup on a G5 with
++ * minigzip to test deflate.
++ *
++ * (going over the flags would be a little faster,
++ * but expressing carry arithmetic in C is cumbersome
++ * and esp. with GCC generates ugly code, which
++ * would bring us to inline asm, and if one PPC does
++ * not like it...)
++ */
++local inline unsigned isel(int a, unsigned x, unsigned y)
++{
++    /*
++     * If the right shift of a signed number is an arithmetic
++     * shift in C is implementation defined.
++     * Since PPC is a 2-complement arch and has the right
++     * instructions to do arith. shifts, a compiler which
++     * does not generate an arithmetic shift in the following
++     * line can be considered ... obsolet.
++     * On the other hand with a little luck a compiler can
++     * change this back to isel or some subc pattern.
++     */
++    int mask = a >> 31; /* create mask of 0 or 0xffffffff */
++    /* if a >= 0 return x, else y */
++    return x + ((y - x) & mask);
++}
++
++local void update_hoffset(Posf *p, uInt wsize, unsigned n)
++{
++    if (sizeof(*p)*CHAR_BIT < 32) {
++        do {
++            register unsigned m = *p;
++            *p++ = (Pos)isel(m-wsize, m-wsize, NIL);
++        } while (--n);
++    } else {
++        do {
++            register unsigned m = *p;
++            *p++ = (Pos)(m >= wsize ? m-wsize : NIL);
++        } while (--n);
++    }
++}
++#endif
+Index: zlib-1.2.7.dfsg/tile/slhash.c
+===================================================================
+--- /dev/null	1970-01-01 00:00:00.000000000 +0000
++++ zlib-1.2.7.dfsg/tile/slhash.c	2013-01-03 00:57:19.000000000 +0200
+@@ -0,0 +1,146 @@
++/* slhash.c -- slide the hash table during fill_window()
++ * Copyright (C) 1995-2010 Jean-loup Gailly and Mark Adler
++ * Copyright (C) 2011 Jan Seiffert
++ * For conditions of distribution and use, see copyright notice in zlib.h
++ */
++
++/* NOTE:
++ * We do not precheck the length or wsize for small values because
++ * we assume a minimum len of 256 (for MEM_LEVEL 1) and a minimum wsize
++ * of 256 for windowBits 8
++ */
++
++/* we use a bunch of inline asm, so GCC it is */
++#ifdef __GNUC__
++#  define HAVE_SLHASH_VEC
++#  define SOUL (sizeof(unsigned long))
++
++/* ========================================================================= */
++local inline unsigned long v2sub(unsigned long a, unsigned long b)
++{
++    unsigned long r;
++#  ifdef __tilegx__
++    r = __insn_v2sub(a, b);
++#  else
++    r = __insn_subh(a, b);
++#  endif
++    return r;
++}
++
++/* ========================================================================= */
++local inline unsigned long v2cmpltu(unsigned long a, unsigned long b)
++{
++    unsigned long r;
++#  ifdef __tilegx__
++    r =  __insn_v2cmpltu(a, b);
++#  else
++    r = __insn_slth_u(a, b);
++#  endif
++    return r;
++}
++
++/* ========================================================================= */
++local inline unsigned long v2mz(unsigned long a, unsigned long b)
++{
++    unsigned long r;
++#  ifdef __tilegx__
++    r = __insn_v2mz(a, b);
++#  else
++    r = __insn_mzh(a, b);
++#  endif
++    return r;
++}
++
++/* ========================================================================= */
++local void update_hoffset_m(Posf *p, uInt wsize, unsigned n)
++{
++    unsigned long vwsize;
++    unsigned int i, f;
++
++    vwsize = (unsigned short)wsize;
++    vwsize = (vwsize << 16) | (vwsize & 0x0000ffff);
++    if (SOUL > 4)
++        vwsize = ((vwsize << 16) << 16) | (vwsize & 0xffffffff);
++
++    /* align */
++    f = (unsigned)ALIGN_DIFF(p, SOUL);
++    if (unlikely(f)) {
++        f /= sizeof(*p);
++        n -= f;
++        if (f & 1) {
++            register unsigned m = *p;
++            *p++ = (Pos)(m >= wsize ? m-wsize : NIL);
++            f--;
++        }
++        if (SOUL > 4 && f >= 2) {
++            unsigned int m = *(unsigned int *)p;
++            m = v2mz(v2cmpltu(m, vwsize), v2sub(m, vwsize));
++            *(unsigned int *)p = m;
++            p += 2;
++        }
++    }
++
++    /* do it */
++    i  = n / (SOUL/sizeof(*p));
++    n %= SOUL/sizeof(*p);
++    if (i & 1) {
++            unsigned long m = *(unsigned long *)p;
++            m = v2mz(v2cmpltu(m, vwsize), v2sub(m, vwsize));
++            *(unsigned long *)p = m;
++            p += SOUL/sizeof(*p);
++            i--;
++    }
++    i /= 2;
++    do {
++            unsigned long m1 = ((unsigned long *)p)[0];
++            unsigned long m2 = ((unsigned long *)p)[1];
++            unsigned long mask1, mask2;
++            mask1 = v2sub(m1, vwsize);
++            m1    = v2cmpltu(m1, vwsize);
++            mask2 = v2sub(m2, vwsize);
++            m2    = v2cmpltu(m2, vwsize);
++            m1    = v2mz(m1, mask1);
++            m2    = v2mz(m2, mask2);
++            ((unsigned long *)p)[0] = m1;
++            ((unsigned long *)p)[1] = m2;
++            p += 2*(SOUL/sizeof(*p));
++    } while (--i);
++
++    /* handle trailer */
++    if (unlikely(n)) {
++        if (SOUL > 4 && n >= 2) {
++            unsigned int m = *(unsigned int *)p;
++            m = v2mz(v2cmpltu(m, vwsize), v2sub(m, vwsize));
++            *(unsigned int *)p = m;
++            p += 2;
++            n -= 2;
++        }
++        if (n & 1) {
++            register unsigned m = *p;
++            *p++ = (Pos)(m >= wsize ? m-wsize : NIL);
++        }
++    }
++}
++
++/* ========================================================================= */
++local void update_hoffset_l(Posf *p, uInt wsize, unsigned n)
++{
++    do {
++        register unsigned m = *p;
++        *p++ = (Pos)(m >= wsize ? m-wsize : NIL);
++    } while (--n);
++}
++
++/* ========================================================================= */
++local inline void update_hoffset(Posf *p, uInt wsize, unsigned n)
++{
++    /*
++     * Unfortunatly most chip designer prefer signed saturation...
++     * So we are better off with a parralel compare and move/mask
++     */
++    if (likely(2 == sizeof(*p) && wsize < (1<<16)))
++        update_hoffset_m(p, wsize, n);
++    else
++        update_hoffset_l(p, wsize, n);
++}
++#endif
+Index: zlib-1.2.7.dfsg/x86/slhash.c
+===================================================================
+--- /dev/null	1970-01-01 00:00:00.000000000 +0000
++++ zlib-1.2.7.dfsg/x86/slhash.c	2013-01-03 00:57:19.000000000 +0200
+@@ -0,0 +1,406 @@
++/* slhash.c -- slide the hash table during fill_window()
++ * Copyright (C) 1995-2010 Jean-loup Gailly and Mark Adler
++ * Copyright (C) 2011 Jan Seiffert
++ * For conditions of distribution and use, see copyright notice in zlib.h
++ */
++
++#include "x86.h"
++
++/* inline asm, so only on GCC (or compatible) */
++#if defined(__GNUC__) && !defined(VEC_NO_GO)
++#  define HAVE_SLHASH_VEC
++#  define HAVE_SLHASH_COMPLETE
++
++local noinline void update_hoffset_x86(Posf *p, uInt wsize, unsigned n);
++local noinline void slhash_x86(Posf *p, Posf *q, uInt wsize, unsigned n);
++local noinline void slhash_SSE2(Posf *p, Posf *q, uInt wsize, unsigned n);
++
++/* NOTE:
++ * We do not precheck the length or wsize for small values because
++ * we assume a minimum len of 256 (for MEM_LEVEL 1) and a minimum wsize
++ * of 256 for windowBits 8
++ */
++
++/* ========================================================================= */
++/* This is totally bogus, because the Pos type is only 16 bit, and as soon as
++ * wsize > 65534, we can not hold the distances in a Pos. All this is a
++ * kind of complicated memset 0.
++ */
++local void update_hoffset_SSE4_1(Posf *p, uInt wsize, unsigned n)
++{
++    register unsigned m;
++    unsigned int i, j;
++
++    i  = ALIGN_DIFF(p, 8)/sizeof(Pos);
++    n -= i;
++    if (unlikely(i)) do {
++        m = *p;
++        *p++ = (Pos)(m >= wsize ? m-wsize : NIL);
++    } while (--i);
++    i = n / 4;
++    n %= 4;
++    asm (
++        "pxor %%xmm6, %%xmm6\n\t"
++        "movd %k3, %%xmm7\n\t"
++        "pshufd $0, %%xmm7, %%xmm7\n\t"
++        "test $8, %0\n\t"
++        "jz 2f\n\t"
++        "movq (%0), %%xmm0\n\t"
++        "add $8, %0\n\t"
++        "dec %1\n\t"
++        "punpcklwd %%xmm6, %%xmm0\n\t"
++        "psubd %%xmm7, %%xmm0\n\t"
++        "packusdw %%xmm6, %%xmm0\n\t"
++        "movq %%xmm0, -8(%0)\n"
++        "2:\n\t"
++        "mov %1, %2\n\t"
++        "shr $1, %1\n\t"
++        "and $1, %2\n\t"
++        ".p2align 3\n"
++        "1:\n\t"
++        "movdqa (%0), %%xmm0\n\t"
++        "add $16, %0\n\t"
++        "movdqa %%xmm0, %%xmm1\n\t"
++        "punpcklwd %%xmm6, %%xmm0\n\t"
++        "punpckhwd %%xmm6, %%xmm1\n\t"
++        "psubd %%xmm7, %%xmm0\n\t"
++        "psubd %%xmm7, %%xmm1\n\t"
++        "packusdw %%xmm1, %%xmm0\n\t"
++        "movdqa %%xmm0, -16(%0)\n\t"
++        "dec %1\n\t"
++        "jnz 1b\n\t"
++        "test %2, %2\n\t"
++        "jz 3f\n\t"
++        "movq (%0), %%xmm0\n\t"
++        "add $8, %0\n\t"
++        "punpcklwd %%xmm6, %%xmm0\n\t"
++        "psubd %%xmm7, %%xmm0\n\t"
++        "packusdw %%xmm6, %%xmm0\n\t"
++        "movq %%xmm0, -8(%0)\n"
++        "3:"
++        : /* %0 */ "=r" (p),
++          /* %1 */ "=r" (i),
++          /* %2 */ "=r" (j)
++        : /* %3 */ "r" (wsize),
++          /*  */ "0" (p),
++          /*  */ "1" (i)
++#  ifdef __SSE2__
++        : "xmm0", "xmm7"
++#  endif
++    );
++    if (unlikely(n))
++        update_hoffset_x86(p, wsize, n);
++}
++
++/* ========================================================================= */
++local void slhash_SSE4_1(Posf *p, Posf *q, uInt wsize, unsigned n)
++{
++    if (likely(wsize <= (1<<16)-1)) {
++        slhash_SSE2(p, q, wsize, n);
++        return;
++    }
++
++    update_hoffset_SSE4_1(p, wsize, n);
++#  ifndef FASTEST
++    /* If n is not on any hash chain, prev[n] is garbage but
++     * its value will never be used.
++     */
++    update_hoffset_SSE4_1(q, wsize, wsize);
++#  endif
++}
++
++/* ========================================================================= */
++local void update_hoffset_SSE2(Posf *p, uInt wsize, unsigned n)
++{
++    register unsigned m;
++    unsigned int i, j;
++
++    i  = ALIGN_DIFF(p, 8)/sizeof(Pos);
++    n -= i;
++    if (unlikely(i)) do {
++        m = *p;
++        *p++ = (Pos)(m >= wsize ? m-wsize : NIL);
++    } while (--i);
++    i = n / 4;
++    n %= 4;
++    asm (
++        "movd %k3, %%xmm7\n\t"
++        "pshuflw $0, %%xmm7, %%xmm7\n\t"
++        "pshufd $0, %%xmm7, %%xmm7\n\t"
++        "test $8, %0\n\t"
++        "jz 2f\n\t"
++        "movq (%0), %%xmm0\n\t"
++        "add $8, %0\n\t"
++        "dec %1\n\t"
++        "psubusw %%xmm7, %%xmm0\n\t"
++        "movq %%xmm0, -8(%0)\n\t"
++        "2:\n\t"
++        "mov %1, %2\n\t"
++        "shr $1, %1\n\t"
++        "and $1, %2\n\t"
++        ".p2align 3\n"
++        "1:\n\t"
++        "movdqa (%0), %%xmm0\n\t"
++        "add $16, %0\n\t"
++        "psubusw %%xmm7, %%xmm0\n\t"
++        "movdqa %%xmm0, -16(%0)\n\t"
++        "dec %1\n\t"
++        "jnz 1b\n\t"
++        "test %2, %2\n\t"
++        "jz 3f\n\t"
++        "movq (%0), %%xmm0\n\t"
++        "add $8, %0\n\t"
++        "psubusw %%xmm7, %%xmm0\n\t"
++        "movq %%xmm0, -8(%0)\n\t"
++        "3:"
++        : /* %0 */ "=r" (p),
++          /* %1 */ "=r" (i),
++          /* %2 */ "=r" (j)
++        : /* %3 */ "r" (wsize),
++          /*  */ "0" (p),
++          /*  */ "1" (i)
++#  ifdef __SSE2__
++        : "xmm0", "xmm7"
++#  endif
++    );
++    if (unlikely(n))
++        update_hoffset_x86(p, wsize, n);
++}
++
++/* ========================================================================= */
++local noinline void slhash_SSE2(Posf *p, Posf *q, uInt wsize, unsigned n)
++{
++    if (unlikely(wsize > (1 << 16)-1)) {
++        slhash_x86(p, q, wsize, n);
++        return;
++    }
++
++    update_hoffset_SSE2(p, wsize, n);
++#  ifndef FASTEST
++    /* If n is not on any hash chain, prev[n] is garbage but
++     * its value will never be used.
++     */
++    update_hoffset_SSE2(q, wsize, wsize);
++#  endif
++}
++
++#  ifndef __x86_64__
++/* ========================================================================= */
++local void update_hoffset_MMX(Posf *p, uInt wsize, unsigned n)
++{
++    register unsigned m;
++    unsigned int i;
++
++    i  = ALIGN_DIFF(p, 8)/sizeof(Pos);
++    n -= i;
++    if (unlikely(i)) do {
++        m = *p;
++        *p++ = (Pos)(m >= wsize ? m-wsize : NIL);
++    } while (--i);
++    i = n / 4;
++    n %= 4;
++    asm (
++        "movd %k2, %%mm7\n\t"
++        "pshufw $0, %%mm7, %%mm7\n\t"
++        ".p2align 2\n"
++        "1:\n\t"
++        "movq (%0), %%mm0\n\t"
++        "add $8, %0\n\t"
++        "psubusw %%mm7, %%mm0\n\t"
++        "movq %%xmm0, -8(%0)\n\t"
++        "dec %1\n\t"
++        "jnz 1b"
++        : /* %0 */ "=r" (p),
++          /* %1 */ "=r" (i)
++        : /* %2 */ "r" (wsize),
++          /*  */ "0" (p),
++          /*  */ "1" (i)
++#    ifdef __MMX__
++        : "mm0", "mm7"
++#    endif
++    );
++    if (unlikely(n))
++        update_hoffset_x86(p, wsize, n);
++}
++
++/* ========================================================================= */
++local noinline void slhash_MMX(Posf *p, Posf *q, uInt wsize, unsigned n)
++{
++    if (unlikely(wsize > (1 << 16)-1)) {
++        slhash_x86(p, q, wsize, n);
++        return;
++    }
++
++    update_hoffset_MMX(p, wsize, n);
++#    ifndef FASTEST
++    /* If n is not on any hash chain, prev[n] is garbage but
++     * its value will never be used.
++     */
++    update_hoffset_MMX(q, wsize, wsize);
++#    endif
++    asm volatile ("emms");
++}
++#  endif
++
++/* ========================================================================= */
++local noinline void update_hoffset_x86(Posf *p, uInt wsize, unsigned n)
++{
++    /*
++     * This code is cheaper then a cmov, measuring whole loops with
++     * rdtsc:
++     * This code:  593216
++     * compiler:  1019864
++     * (and 1000 runs show the same trend)
++     * Old CPUs without cmov will also love it, better then jumps.
++     *
++     * GCC does not manage to create it, x86 is a cc_mode target,
++     * and prop. will stay forever.
++     */
++    do {
++        register unsigned m = *p;
++        unsigned t;
++        asm (
++            "sub	%2, %0\n\t"
++            "sbb	$0, %1\n\t"
++            : "=r" (m),
++              "=r" (t)
++            : "r" (wsize),
++              "0" (m),
++              "1" (0)
++        );
++        *p++ = (Pos)(m & ~t);
++    } while (--n);
++}
++
++/* ========================================================================= */
++local noinline void slhash_x86(Posf *p, Posf *q, uInt wsize, unsigned n)
++{
++    update_hoffset_x86(p, wsize, n);
++#  ifndef FASTEST
++    /* If n is not on any hash chain, prev[n] is garbage but
++     * its value will never be used.
++     */
++    update_hoffset_x86(q, wsize, wsize);
++#  endif
++}
++
++/*
++ * Knot it all together with a runtime switch
++ */
++/* ========================================================================= */
++/* function enum */
++enum slhash_types
++{
++    T_SLHASH_RTSWITCH = 0,
++    T_SLHASH_X86,
++#  ifndef __x86_64__
++    T_SLHASH_MMX,
++#  endif
++    T_SLHASH_SSE2,
++    T_SLHASH_SSE4_1,
++    T_SLHASH_MAX
++};
++
++/* ========================================================================= */
++/* Decision table */
++local const struct test_cpu_feature tfeat_slhash_vec[] =
++{
++    /* func               flags  features       */
++    {T_SLHASH_SSE4_1,        0, {0,                  CFB(CFEATURE_SSE4_1)}},
++    {T_SLHASH_SSE2,          0, {CFB(CFEATURE_SSE2),                    0}},
++#  ifndef __x86_64__
++    {T_SLHASH_MMX,           0, {CFB(CFEATURE_MMX),                     0}},
++#  endif
++    {T_SLHASH_X86, CFF_DEFAULT, { 0, 0}},
++};
++
++/* ========================================================================= */
++/* Prototypes */
++local void slhash_vec_runtimesw(Posf *p, Posf *q, uInt wsize, unsigned n);
++
++/* ========================================================================= */
++/* Function pointer table */
++local void (*const slhash_ptr_tab[])(Posf *p, Posf *q, uInt wsize, unsigned n) =
++{
++    slhash_vec_runtimesw,
++    slhash_x86,
++#  ifndef __x86_64__
++    slhash_MMX,
++#  endif
++    slhash_SSE2,
++    slhash_SSE4_1,
++};
++
++/* ========================================================================= */
++#  if _FORTIFY_SOURCE-0 > 0
++/* Runtime decide var */
++local enum slhash_types slhash_f_type = T_SLHASH_RTSWITCH;
++#  else
++/* Runtime Function pointer */
++local void (*slhash_vec_ptr)(Posf *p, Posf *q, uInt wsize, unsigned n) = slhash_vec_runtimesw;
++#  endif
++
++/* ========================================================================= */
++/* Constructor to init the decide var early */
++local GCC_ATTR_CONSTRUCTOR void slhash_vec_select(void)
++{
++    enum slhash_types lf_type =
++        _test_cpu_feature(tfeat_slhash_vec, sizeof (tfeat_slhash_vec)/sizeof (tfeat_slhash_vec[0]));
++#  if _FORTIFY_SOURCE-0 > 0
++    slhash_f_type = lf_type;
++#  else
++    slhash_vec_ptr = slhash_ptr_tab[lf_type];
++#  endif
++}
++
++/* ========================================================================= */
++/* Jump function */
++void ZLIB_INTERNAL _sh_slide (p, q, wsize, n)
++    Posf *p;
++    Posf *q;
++    uInt wsize;
++    unsigned n;
++{
++    /*
++     * Protect us from memory corruption. As long as the function pointer table
++     * resides in rodata, with a little bounding we can prevent arb. code
++     * execution (overwriten vtable pointer). We still may crash if the corruption
++     * is within bounds (or the cpudata gets corrupted too) and we jump into an
++     * function with unsupported instr., but this should mitigate the worst case
++     * scenario.
++     * But it's more expensive than a simple function pointer, so only when more
++     * security is wanted.
++     */
++#  if _FORTIFY_SOURCE-0 > 0
++    enum slhash_types lf_type = slhash_f_type;
++    /*
++     * If the compiler is smart he creates a cmp + sbb + and, cmov have a high
++     * latency and are not always avail.
++     * Otherwise compiler logic is advanced enough to see what's happening here,
++     * so there maybe is a reason why he changes this to a cmov...
++     * (or he simply does not see he can create a conditional -1/0 the cheap way)
++     *
++     * Maybe change it to an unlikely() cbranch? Which still leaves the question
++     * what's the mispredition propability, esp. with lots of different x86
++     * microarchs and not always perfect CFLAGS (-march/-mtune) to arrange the
++     * code to the processors liking.
++     */
++    lf_type &= likely((unsigned)lf_type < (unsigned)T_SLHASH_MAX) ? -1 : 0;
++    return slhash_ptr_tab[lf_type](p, q, wsize, n);
++#  else
++    return slhash_vec_ptr(p, q, wsize, n);
++#  endif
++}
++
++/* ========================================================================= */
++/*
++ * the runtime switcher is a little racy, but this is OK,
++ * it should normaly not run if the constructor works, and
++ * we are on x86, which isn't that picky about ordering
++ */
++local void slhash_vec_runtimesw(Posf *p, Posf *q, uInt wsize, unsigned n)
++{
++    slhash_vec_select();
++    return _sh_slide(p, q, wsize, n);
++}
++#endif
+Index: zlib-1.2.7.dfsg/INDEX
+===================================================================
+--- zlib-1.2.7.dfsg.orig/INDEX	2013-01-03 00:59:43.000000000 +0200
++++ zlib-1.2.7.dfsg/INDEX	2013-01-03 01:00:36.000000000 +0200
+@@ -63,6 +63,7 @@
+ inflate.h
+ inftrees.c
+ inftrees.h
++slhash.c
+ trees.c
+ trees.h
+ uncompr.c

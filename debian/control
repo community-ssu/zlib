@@ -1,0 +1,59 @@
+Source: zlib
+Section: libs
+Priority: optional
+Maintainer: Ludek Finstrle <luf@pzkagis.cz>
+XSBC-Original-Maintainer: Mark Brown <broonie@debian.org>
+Standards-Version: 3.6.2
+Build-Depends: debhelper (>= 5)
+
+Package: zlib1g
+Architecture: any
+Depends: ${shlibs:Depends}, ${misc:Depends}
+Pre-Depends: ${misc:Pre-Depends}
+Priority: required
+Breaks: libxml2 (< 2.6.32.dfsg-5maemo4+0m5+0cssu1)
+Conflicts: zlib1 (<= 1:1.0.4-7), zlib1g-udeb
+Replaces: zlib1g-udeb
+Provides: libz1
+Description: compression library - runtime
+ zlib is a library implementing the deflate compression method found
+ in gzip and PKZIP.  This package includes the shared library.
+
+Package: zlib1g-dbg
+Architecture: any
+Depends: zlib1g (= ${Source-Version})
+Description: compression library - debug symbols
+ zlib is a library implementing the deflate compression method found
+ in gzip and PKZIP.  This package includes the shared library.
+
+Package: zlib1g-dev
+Section: libdevel
+Architecture: any
+Depends: zlib1g (= ${Source-Version}), libc6-dev | libc-dev, ${misc:Depends}
+Conflicts: zlib1-dev
+Provides: libz-dev
+Description: compression library - development
+ zlib is a library implementing the deflate compression method found
+ in gzip and PKZIP.  This package includes the development support
+ files.
+
+Package: zlib-bin
+Section: utils
+Architecture: any
+Depends: ${shlibs:Depends}, ${misc:Depends}
+Description: compression library - sample programs
+ Some generally useful sample programs from the contrib directory.
+ Includes a "mini" implementation of `zip' and `unzip' called
+ `minizip' and `miniunzip' respectively.
+
+Package: zlib1g-udeb
+XC-Package-Type: udeb
+Architecture: any
+Priority: optional
+Breaks: libxml2 (< 2.6.32.dfsg-5maemo4+0m5+0cssu1)
+Provides: zlib1g
+Section: debian-installer
+Description: compression library - runtime for Debian installer
+ zlib is a library implementing the deflate compression method found
+ in gzip and PKZIP.  This minimal package includes the shared library
+ for use with the Debian installer.

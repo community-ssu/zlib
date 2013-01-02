@@ -1,0 +1,4 @@
+001-link_to_shared_zlib_in_contrib
+004-define_REENTRANT
+201-maemo-adler32_vec.patch
+202-maemo-slhash_vec.patch

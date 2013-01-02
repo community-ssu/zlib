@@ -1,0 +1,190 @@
+#!/usr/bin/make -f
+
+include /usr/share/quilt/quilt.make
+
+# Uncomment this to turn on verbose mode.
+export DH_VERBOSE=1
+
+VERSION:=$(shell LC_ALL=C dpkg-parsechangelog | grep '^Version:' | \
+		 sed -e 's/^Version: *//' -e 's/-.*$$//' -e 's/^.*://')
+SONAME=1
+
+DEB_BUILD_GNU_TYPE  ?= $(shell dpkg-architecture -qDEB_BUILD_GNU_TYPE)
+DEB_HOST_GNU_TYPE   ?= $(shell dpkg-architecture -qDEB_HOST_GNU_TYPE)
+DEB_HOST_ARCH       ?= $(shell dpkg-architecture -qDEB_HOST_ARCH)
+DEB_HOST_ARCH_OS    ?= $(shell dpkg-architecture -qDEB_HOST_GNU_OS)
+
+CFLAGS = -Wall -g -D_REENTRANT
+
+ifeq ($(DEB_HOST_GNU_TYPE),$(DEB_BUILD_GNU_TYPE))
+TESTS=test
+AR=ar
+CC=gcc
+CC32=gcc -m32
+CC64=gcc -m64
+else
+AR=$(DEB_HOST_GNU_TYPE)-ar
+CC=$(DEB_HOST_GNU_TYPE)-gcc
+CC32=$(DEB_HOST_GNU_TYPE)-gcc -m32
+CC64=$(DEB_HOST_GNU_TYPE)-gcc -m64
+endif
+
+# Did the user want to turn optimisation off for some reason?
+ifneq (,$(findstring noopt,$(DEB_BUILD_OPTIONS)))
+CFLAGS=-O0
+else
+# By default, optimise for osso
+CFLAGS=-O2
+
+endif
+
+# Use neon and soft-float mode on arm.
+ifeq ($(DEB_BUILD_ARCH), armel)
+	CFLAGS += -mfpu=neon -mfloat-abi=softfp -mtune=cortex-a8 -mcpu=cortex-a8
+
+# Use thumb mode if it enabled.
+ifneq (,$(findstring thumb,$(DEB_BUILD_OPTIONS)))
+#	CFLAGS += -mthumb
+endif
+endif
+
+UNALIGNED_ARCHS=i386 amd64 kfreebsd-i386 kfreebsd-amd64 hurd-i386 lpia
+ifneq (,$(findstring $(DEB_HOST_ARCH), $(UNALIGNED_ARCHS)))
+CFLAGS+=-DUNALIGNED_OK
+endif
+
+COPYLIST=*.h *.c *.in zlib.map configure zlib.3 test
+
+configure-stamp: configure
+	dh_testdir
+
+	if [ ! -f Makefile.stash ]; then cp Makefile Makefile.stash ; fi
+
+	AR=$(AR) CC="$(DEB_HOST_GNU_TYPE)-gcc" CFLAGS="$(CFLAGS)" LDFLAGS="$(LDFLAGS)" uname=GNU ./configure --shared --prefix=/usr --libdir=\$${prefix}/lib
+
+	touch $@
+
+configure64-stamp: configure
+	dh_testdir
+
+	mkdir -p debian/64
+	cp -r $(COPYLIST) debian/64
+	cd debian/64 && AR=$(AR) CC="$(DEB_HOST_GNU_TYPE)-gcc $(m64)" \
+	    CFLAGS="$(CFLAGS)" LDFLAGS="$(LDFLAGS)" \
+	    uname=GNU ./configure --shared --prefix=/usr  --libdir=\$${prefix}/usr/lib64
+	touch $@
+
+configure32-stamp: configure
+	dh_testdir
+
+	mkdir -p debian/32
+	cp -r $(COPYLIST) debian/32
+	cd debian/32 && AR=$(AR) CC="$(DEB_HOST_GNU_TYPE)-gcc $(m32)" \
+	    CFLAGS="$(CFLAGS)" LDFLAGS="$(LDFLAGS)" \
+	    uname=GNU ./configure --shared --prefix=/usr --libdir=\$${prefix}/usr/lib32
+	touch $@
+
+configuren32-stamp: configure
+	dh_testdir
+
+	mkdir -p debian/n32
+	cp -r $(COPYLIST) debian/n32
+	cd debian/n32 && AR=$(AR) CC="$(DEB_HOST_GNU_TYPE)-gcc $(mn32)" \
+	    CFLAGS="$(CFLAGS)" LDFLAGS="$(LDFLAGS)" \
+	    uname=GNU ./configure --shared --prefix=/usr --libdir=\$${prefix}/usr/lib32
+	touch $@
+
+build: patch build-stamp $(EXTRA_BUILD)
+build-stamp: configure-stamp
+	dh_testdir
+
+	$(MAKE)
+	$(MAKE) CC=$(DEB_HOST_GNU_TYPE)-gcc CFLAGS="-I../.. $(CFLAGS)" LDFLAGS="$(LDFLAGS)" -C contrib/minizip
+	-$(MAKE) test
+
+	touch $@
+
+build64-stamp: configure64-stamp
+	dh_testdir
+	make -C debian/64
+	touch $@
+
+
+build32-stamp: configure32-stamp
+	dh_testdir
+	make -C debian/32
+	touch $@
+
+buildn32-stamp: configuren32-stamp
+	dh_testdir
+	make -C debian/n32
+	touch $@
+
+clean: unpatch
+	dh_testdir
+	dh_testroot
+
+	$(MAKE) -C contrib/minizip clean
+	$(MAKE) distclean
+
+	rm -f build-stamp configure-stamp foo.gz
+	rm -rf debian/64 build64-stamp configure64-stamp
+	rm -rf debian/32 build32-stamp configure32-stamp
+	rm -rf debian/n32 buildn32-stamp configuren32-stamp
+	 -mv Makefile.stash Makefile
+	  -mv zlibdefs.h.stash zlibdefs.h
+
+	dh_clean
+
+install: build
+	dh_testdir
+	dh_testroot
+	dh_clean -k
+	dh_installdirs
+	dh_link
+
+	$(MAKE) prefix=$(CURDIR)/debian/tmp/usr install
+
+	#install -d debian/tmp/lib
+	#mv debian/tmp/usr/lib/libz.so.* debian/tmp/lib/
+	#ln -sf /lib/$$(readlink debian/tmp/usr/lib/libz.so) debian/tmp/usr/lib/libz.so
+
+install64: install build64-stamp
+	$(MAKE) -C debian/64 prefix=$(CURDIR)/debian/tmp install
+
+install32: install build32-stamp
+	$(MAKE) -C debian/32 prefix=$(CURDIR)/debian/tmp install
+
+installn32: install buildn32-stamp
+	$(MAKE) -C debian/n32 prefix=$(CURDIR)/debian/tmp install
+	
+# Build architecture-independent files here.
+binary-indep: build install
+# We have nothing to do by default.
+
+# Build architecture-dependent files here.
+binary-arch: build install $(EXTRA_INSTALL)
+	dh_testdir
+	dh_testroot
+	dh_installchangelogs -s ChangeLog
+	dh_installdocs -s
+	dh_installexamples -s
+	mkdir -p debian/tmp/usr/bin
+	cp contrib/minizip/minizip debian/tmp/usr/bin
+	cp contrib/minizip/miniunz debian/tmp/usr/bin/miniunzip
+	dh_install -s --sourcedir=debian/tmp
+	dh_installman -s
+	dh_lintian -s
+	dh_link -s
+	dh_strip -s --dbg-package=zlib1g-dbg
+	dh_compress -s
+	dh_fixperms -s
+	dh_makeshlibs -pzlib1g -V"zlib1g (>= 1:1.2.1)" --add-udeb=zlib1g-udeb
+	dh_installdeb -s
+	dh_shlibdeps -s
+	dh_gencontrol -s
+	dh_md5sums -s
+	dh_builddeb -s
+
+binary: binary-indep binary-arch
+.PHONY: build clean binary-indep binary-arch binary install install64 install32
