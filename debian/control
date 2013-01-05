@@ -11,8 +11,7 @@ Architecture: any
 Depends: ${shlibs:Depends}, ${misc:Depends}
 Pre-Depends: ${misc:Pre-Depends}
 Priority: required
-Breaks: libxml2 (< 2.6.32.dfsg-5maemo4+0m5+0cssu1)
-Conflicts: zlib1 (<= 1:1.0.4-7), zlib1g-udeb
+Conflicts: zlib1 (<= 1:1.0.4-7), zlib1g-udeb libxml2 (<< 2.6.32.dfsg-5maemo4+0m5+0cssu1)
 Replaces: zlib1g-udeb
 Provides: libz1
 Description: compression library - runtime
@@ -50,7 +49,7 @@ Package: zlib1g-udeb
 XC-Package-Type: udeb
 Architecture: any
 Priority: optional
-Breaks: libxml2 (< 2.6.32.dfsg-5maemo4+0m5+0cssu1)
+Conflicts: libxml2 (< 2.6.32.dfsg-5maemo4+0m5+0cssu1)
 Provides: zlib1g
 Section: debian-installer
 Description: compression library - runtime for Debian installer
