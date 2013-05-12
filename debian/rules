@@ -174,7 +174,7 @@ binary-arch: build install $(EXTRA_INSTALL)
 	cp contrib/minizip/miniunz debian/tmp/usr/bin/miniunzip
 	dh_install -s --sourcedir=debian/tmp
 	dh_installman -s
-	dh_lintian -s
+#	dh_lintian -s #no lintian in debhelper 5
 	dh_link -s
 	dh_strip -s --dbg-package=zlib1g-dbg
 	dh_compress -s
